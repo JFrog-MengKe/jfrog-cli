@@ -261,3 +261,7 @@ require (
 // replace github.com/jfrog/jfrog-cli-security => github.com/jfrog/jfrog-cli-security dev
 
 // replace github.com/jfrog/build-info-go => github.com/reshmifrog/build-info-go v1.8.9-0.20260106113011-c7f131cea484
+
+// Local sibling modules for release-bundle-export --export-only (push forks then: go get github.com/JFrog-MengKe/jfrog-client-go@<sha> etc.)
+replace github.com/jfrog/jfrog-cli-artifactory => ../jfrog-cli-artifactory
+replace github.com/jfrog/jfrog-client-go => ../jfrog-client-go
