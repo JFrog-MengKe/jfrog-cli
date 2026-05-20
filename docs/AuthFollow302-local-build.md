@@ -1,4 +1,12 @@
-# AuthFollow302 本地构建与使用说明
+# AuthFollow302 本地构建与使用说明 / Local Build & Usage Guide
+
+[中文](#中文) · [English](#english)
+
+---
+
+<a id="中文"></a>
+
+## 简介
 
 本文档说明如何从 GitHub 拉取 **AuthFollow302** 分支、本地编译 `jf`，以及 **302 跨域重定向时保留认证头** 功能的配置与代码位置。
 
@@ -115,7 +123,7 @@ cp ./jf /usr/local/bin/jf   # 或任意目录
 
 | 变量 | 取值 | 含义 |
 |------|------|------|
-| `JFROG_CLI_REDIRECT_FORWARD_HEADER` | `true`（大小写不敏感） | 开启「允许listed 目标主机上重定向时转发客户端头（含认证）」 |
+| `JFROG_CLI_REDIRECT_FORWARD_HEADER` | `true`（大小写不敏感） | 开启「在 allowlisted 目标主机上重定向时转发客户端头（含认证）」 |
 | `JFROG_CLI_REDIRECT_AUTH_ALLOWED_HOSTS` | 逗号分隔主机列表 | 重定向**目标**主机白名单 |
 
 **两者缺一不可：** 仅设 `true` 而无白名单时，行为与未开启相同。
@@ -130,7 +138,7 @@ export JFROG_CLI_REDIRECT_AUTH_ALLOWED_HOSTS="*.jfrogchina.com,demo.jfrogchina.c
 白名单规则（实现在 `redirect_policy.go`）：
 
 - **精确匹配**：`demo.jfrogchina.com`
-- **子域通配**：`*.jfrogchina.com` 匹配 `foo.jfrogchina.com`，**不匹配**  apex `jfrogchina.com`
+- **子域通配**：`*.jfrogchina.com` 匹配 `foo.jfrogchina.com`，**不匹配** apex `jfrogchina.com`
 - 最多跟随 **10** 次重定向
 
 ### 5.2 验证是否生效
@@ -236,6 +244,248 @@ cd "$WORKDIR/jfrog-cli" && go mod tidy && go build -o jf .
 ---
 
 ## 8. 参考链接
+
+- `jfrog-client-go` AuthFollow302: https://github.com/JFrog-MengKe/jfrog-client-go/tree/AuthFollow302  
+- `jfrog-cli-artifactory` AuthFollow302: https://github.com/JFrog-MengKe/jfrog-cli-artifactory/tree/AuthFollow302  
+- `jfrog-cli` AuthFollow302: https://github.com/JFrog-MengKe/jfrog-cli/tree/AuthFollow302  
+
+---
+
+<a id="english"></a>
+
+## Introduction
+
+This guide explains how to clone the **AuthFollow302** branches from GitHub, build `jf` locally, and configure **preserving authentication headers on cross-host HTTP 302 redirects**, including where the code lives.
+
+The feature is controlled by environment variables plus a host allowlist. It addresses cases such as nginx redirecting `mengk.jfrogchina.com` to `demo.jfrogchina.com`, where Go’s default redirect handling drops `Authorization`, causing `jf rt curl`, `jf rt dl`, and other API calls to return 401.
+
+---
+
+## 1. Repositories and branches
+
+| Repository | Default branch | Feature branch | Remote |
+|------------|----------------|----------------|--------|
+| `jfrog-client-go` | `master` | `AuthFollow302` | `https://github.com/JFrog-MengKe/jfrog-client-go.git` |
+| `jfrog-cli-artifactory` | `main` | `AuthFollow302` | `https://github.com/JFrog-MengKe/jfrog-cli-artifactory.git` |
+| `jfrog-cli` | `master` | `AuthFollow302` | `https://github.com/JFrog-MengKe/jfrog-cli.git` |
+
+**Note:** `jfrog-client-go`’s `AuthFollow302` is based on the fork’s `2813` branch (includes unrelated commits such as lifecycle). Redirect changes are in commit `b4371de1`. To build `jf`, all three repos must be **sibling directories**, and `jfrog-cli/go.mod` must use local `replace` directives (already on this branch).
+
+**npm ETARGET / Curation hints** live on branch `curation-audit-npm`, **not** on `AuthFollow302`.
+
+---
+
+## 2. Clone from remote
+
+Clone all three repos under one parent directory (e.g. `~/Documents/CLI`):
+
+```bash
+export WORKDIR=~/Documents/CLI
+mkdir -p "$WORKDIR"
+cd "$WORKDIR"
+
+git clone https://github.com/JFrog-MengKe/jfrog-client-go.git
+git clone https://github.com/JFrog-MengKe/jfrog-cli-artifactory.git
+git clone https://github.com/JFrog-MengKe/jfrog-cli.git
+
+cd jfrog-client-go && git checkout AuthFollow302 && cd ..
+cd jfrog-cli-artifactory && git checkout AuthFollow302 && cd ..
+cd jfrog-cli && git checkout AuthFollow302 && cd ..
+```
+
+Expected layout:
+
+```text
+CLI/
+├── jfrog-client-go/          # AuthFollow302
+├── jfrog-cli-artifactory/    # AuthFollow302
+└── jfrog-cli/                # AuthFollow302 (go.mod replace)
+```
+
+If already cloned, switch branches only:
+
+```bash
+git -C jfrog-client-go fetch origin && git -C jfrog-client-go checkout AuthFollow302
+git -C jfrog-cli-artifactory fetch origin && git -C jfrog-cli-artifactory checkout AuthFollow302
+git -C jfrog-cli fetch origin && git -C jfrog-cli checkout AuthFollow302
+```
+
+Confirm the end of `jfrog-cli/go.mod` on `AuthFollow302`:
+
+```go
+replace github.com/jfrog/jfrog-cli-artifactory => ../jfrog-cli-artifactory
+replace github.com/jfrog/jfrog-client-go => ../jfrog-client-go
+```
+
+---
+
+## 3. Prerequisites
+
+| Item | Requirement |
+|------|-------------|
+| Go | **Go 1.26.3+** for `jfrog-cli` (see `jfrog-cli/go.mod`); submodules may list 1.25.x—follow CLI |
+| Network | Access to `proxy.golang.org` or a corporate `GOPROXY` |
+| System curl | `jf rt curl` invokes system `curl`; cross-host redirects need `-L` / `--location-trusted` |
+| JFrog CLI config | Artifactory configured via `jf c add` (URL, user, API Key / Access Token) |
+
+Optional proxy for module download:
+
+```bash
+export https_proxy=http://127.0.0.1:7897
+export http_proxy=http://127.0.0.1:7897
+```
+
+---
+
+## 4. Local build
+
+From the **`jfrog-cli` repository root**:
+
+```bash
+cd "$WORKDIR/jfrog-cli"
+
+go mod tidy
+go build -o jf .
+```
+
+Verify:
+
+```bash
+./jf --version
+```
+
+Optional install to PATH:
+
+```bash
+cp ./jf /usr/local/bin/jf
+```
+
+Do **not** build only `jfrog-cli-artifactory` or `jfrog-client-go` and expect a full `jf` binary—the entry point is `jfrog-cli` only.
+
+---
+
+## 5. Configuration and usage
+
+### 5.1 Environment variables (both required)
+
+| Variable | Value | Meaning |
+|----------|-------|---------|
+| `JFROG_CLI_REDIRECT_FORWARD_HEADER` | `true` (case-insensitive) | Enable forwarding client headers (including auth) on redirects to allowlisted hosts |
+| `JFROG_CLI_REDIRECT_AUTH_ALLOWED_HOSTS` | Comma-separated hosts | Allowlist for redirect **target** hosts |
+
+If only `true` is set without a non-empty allowlist, behavior matches the feature **disabled**.
+
+Example (JFrog China demo):
+
+```bash
+export JFROG_CLI_REDIRECT_FORWARD_HEADER=true
+export JFROG_CLI_REDIRECT_AUTH_ALLOWED_HOSTS="*.jfrogchina.com,demo.jfrogchina.com"
+```
+
+Allowlist rules (`redirect_policy.go`):
+
+- **Exact:** `demo.jfrogchina.com`
+- **Wildcard subdomain:** `*.jfrogchina.com` matches `foo.jfrogchina.com`, **not** apex `jfrogchina.com`
+- Up to **10** redirect hops
+
+### 5.2 Verify it works
+
+Do **not** use `ping` (unauthenticated). Use an authenticated System API:
+
+```bash
+# Without env vars: cross-host 302 may yield 401
+jf rt curl -XGET /api/system/version
+
+# With env vars + allowlist: expect 200 and version JSON
+export JFROG_CLI_REDIRECT_FORWARD_HEADER=true
+export JFROG_CLI_REDIRECT_AUTH_ALLOWED_HOSTS="*.jfrogchina.com,demo.jfrogchina.com"
+jf rt curl -XGET /api/system/version
+```
+
+Other commands:
+
+```bash
+jf rt dl <repo-path> <target>
+jf rt curl -XGET /api/storage/<repo>/<path>
+```
+
+### 5.3 Behavior summary
+
+| Scenario | Disabled | Enabled, target on allowlist |
+|----------|----------|------------------------------|
+| GET + redirects | Standard Go: strips `Authorization` on cross-host | Re-applies API Key / Token / basic auth |
+| POST 302 (AQL, uploads, etc.) | May lose auth or mishandle body | Retries via `Send()`; strips creds if target not allowlisted |
+| `jf rt curl` | curl drops cross-host `Authorization` | Prepends `-L --location-trusted` when `-L` not already present |
+| Target not on allowlist | — | Standard HTTP: **no** auth forwarding |
+
+Look for `JFrog CLI redirect policy:` in Debug logs.
+
+---
+
+## 6. Code changes
+
+### 6.1 `jfrog-client-go` (core HTTP)
+
+**Commit:** `b4371de1` — `feat(http): forward auth headers on redirect for allowlisted hosts`
+
+| File | Change |
+|------|--------|
+| `http/httpclient/redirect_policy.go` | **New.** Env vars, allowlist parsing, `allowlistCheckRedirect`, credential stripping for non-allowlisted POST redirects |
+| `http/httpclient/redirect_policy_test.go` | **New.** Unit tests |
+| `http/httpclient/client.go` | `doRequest` + `UploadFileFromReader`: custom `CheckRedirect`; POST 302 via `jc.Send()` |
+
+```go
+func RedirectForwardHeaderEnabled() bool
+```
+
+Remote `AuthFollow302` may also include `2813` commits (e.g. `39069157` lifecycle)—unrelated to redirects. Minimal redirect diff: `origin/master..b4371de1`.
+
+### 6.2 `jfrog-cli-artifactory` (`jf rt curl`)
+
+**Commit:** `78fe4a9` — `feat(rt curl): follow cross-host redirects when redirect forwarding is enabled`
+
+| File | Change |
+|------|--------|
+| `artifactory/commands/curl/curl.go` | `PrependFollowRedirectFlagsForCurl` adds `-L --location-trusted` |
+| `artifactory/cli/cli.go` | Wires prepend into `newRtCurlCommand` |
+
+System `curl` does not use Go’s `CheckRedirect`; extra flags are required.
+
+### 6.3 `jfrog-cli` (wire local modules)
+
+**Commit:** `60055c45` — `build: point jfrog-cli-artifactory and jfrog-client-go at sibling modules`
+
+| File | Change |
+|------|--------|
+| `go.mod` | `replace` to sibling repos for local AuthFollow302 sources |
+
+Remove sibling `replace` before upstream PR; use published modules or `go get` at a specific commit.
+
+---
+
+## 7. FAQ
+
+**Q: Still getting 401 with env vars set?**  
+- Confirm the redirect **landing host** is allowlisted (Debug logs show the host).  
+- For `jf rt curl`, ensure `-L` is not removed and curl supports `--location-trusted`.  
+- Validate with `/api/system/version`, not `ping`.
+
+**Q: Relation to `curation-audit-npm`?**  
+- `curation-audit-npm`: ETARGET hints for `jf npm i` / `jf ca`.  
+- `AuthFollow302`: HTTP 302 auth forwarding only. Add a `replace` for security/artifactory on `curation-audit-npm` if you need both.
+
+**Q: Update to latest remote `AuthFollow302`?**
+
+```bash
+for d in jfrog-client-go jfrog-cli-artifactory jfrog-cli; do
+  git -C "$WORKDIR/$d" pull origin AuthFollow302
+done
+cd "$WORKDIR/jfrog-cli" && go mod tidy && go build -o jf .
+```
+
+---
+
+## 8. Links
 
 - `jfrog-client-go` AuthFollow302: https://github.com/JFrog-MengKe/jfrog-client-go/tree/AuthFollow302  
 - `jfrog-cli-artifactory` AuthFollow302: https://github.com/JFrog-MengKe/jfrog-cli-artifactory/tree/AuthFollow302  
